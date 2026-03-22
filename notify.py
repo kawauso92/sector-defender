@@ -32,7 +32,7 @@ def build_btc_notification_message(
     return (
         "【BTCシグナル🔴】\n"
         f"BTC急落検知：{drop_pct:.2f}%\n"
-        f"指値：{limit_price:,.2f} USDT\n"
+        f"指値：{limit_price:,.2f} USD\n"
         "利確：+1.4% / 損切り：-1.4%\n"
         f"推奨証拠金：¥{margin_jpy:,.0f}（レバ{leverage}倍）\n"
         "有効期限：2時間以内"

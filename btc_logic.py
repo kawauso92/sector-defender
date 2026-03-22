@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-BTC_TICKER = "BTC-USDT"
+BTC_TICKER = "BTC-USD"
 USDJPY_TICKER = "USDJPY=X"
 BTC_H1_CACHE = Path("btc_1h_cache.csv")
 BTC_DROP_RESULTS = Path("btc_drop_results.csv")
@@ -222,7 +222,7 @@ def build_btc_signal_package() -> BtcSignalPackage:
     recent_drops = recent_drops.rename(
         columns={
             "close_time": "急落時刻",
-            "close": "終値(USDT)",
+            "close": "終値(USD)",
             "hourly_return_pct": "1時間変化率",
         }
     )

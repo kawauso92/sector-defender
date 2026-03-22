@@ -96,7 +96,7 @@ TEXT_PAGE_SELECT = "\u30da\u30fc\u30b8\u9078\u629e"
 TEXT_PAGE_ETF = "\u65e5\u7c73ETF\u30ea\u30fc\u30c9\u30e9\u30b0\u30b7\u30b0\u30ca\u30eb"
 TEXT_PAGE_BTC = "BTC\u6025\u843d\u30ea\u30d0\u30a6\u30f3\u30c9\u30b7\u30b0\u30ca\u30eb"
 TEXT_PAGE_VIX = "VIX\u6025\u843d\u30ea\u30d0\u30a6\u30f3\u30c9\u30b7\u30b0\u30ca\u30eb\uff082558\u5bfe\u8c61\uff09"
-TEXT_BTC_SUBTITLE = "BTC/USDT\u306e1\u6642\u9593\u8db3\u3067-3%\u4ee5\u4e0a\u306e\u6025\u843d\u3092\u691c\u77e5\u3057\u3001E1\u6307\u5024\u306e\u9006\u5f35\u308a\u6761\u4ef6\u3092\u8868\u793a\u3057\u307e\u3059\u3002"
+TEXT_BTC_SUBTITLE = "BTC/USD\u306e1\u6642\u9593\u8db3\u3067-3%\u4ee5\u4e0a\u306e\u6025\u843d\u3092\u691c\u77e5\u3057\u3001E1\u6307\u5024\u306e\u9006\u5f35\u308a\u6761\u4ef6\u3092\u8868\u793a\u3057\u307e\u3059\u3002"
 TEXT_BTC_SIGNAL = "\U0001F534 BTC\u6025\u843d\u30b7\u30b0\u30ca\u30eb\u767a\u751f"
 TEXT_BTC_NO_SIGNAL = "\u2705 \u73fe\u5728\u30b7\u30b0\u30ca\u30eb\u306a\u3057"
 TEXT_VIX_SUBTITLE = "C4\u6761\u4ef6\uff08VIX\u524d\u65e5\u6bd4+10%\u4ee5\u4e0a\u304b\u3064VIX 25\u4ee5\u4e0a\uff09\u3067 2558.T \u306e\u9006\u5f35\u308a\u30b7\u30b0\u30ca\u30eb\u3092\u8868\u793a\u3057\u307e\u3059\u3002"
@@ -336,7 +336,7 @@ def render_market_summary(package: SignalPackage) -> None:
 
 
 def format_usdt(value: float) -> str:
-    return f"{value:,.2f} USDT"
+    return f"{value:,.2f} USD"
 
 
 def format_fx_rate(value: float) -> str:
@@ -598,7 +598,7 @@ def render_btc_page() -> None:
                     "",
                     "【推奨ロット】",
                     f"証拠金使用額：¥{position_plan['margin_jpy']:,.0f}",
-                    f"ポジションサイズ：{position_plan['position_usdt']:,.2f} USDT",
+                    f"ポジションサイズ：{position_plan['position_usdt']:,.2f} USD",
                     f"（為替レート：{fx_label}）",
                     "━━━━━━━━━━━━━━━━",
                 ]
@@ -609,13 +609,13 @@ def render_btc_page() -> None:
         st.markdown("**直近の急落履歴（過去5件）**")
         recent_drops = package.recent_drops.copy()
         recent_drops["急落時刻"] = pd.to_datetime(recent_drops["急落時刻"], utc=True).dt.tz_convert("Asia/Tokyo").dt.strftime("%Y-%m-%d %H:%M")
-        recent_drops["終値(USDT)"] = recent_drops["終値(USDT)"].map(lambda value: f"{value:,.2f}")
+        recent_drops["終値(USD)"] = recent_drops["終値(USD)"].map(lambda value: f"{value:,.2f}")
         recent_drops["1時間変化率"] = recent_drops["1時間変化率"].map(lambda value: f"{value:.2f}%")
         st.dataframe(recent_drops, use_container_width=True, hide_index=True)
 
     st.subheader("推奨ロット")
     lot_col1, lot_col2 = st.columns(2)
-    lot_col1.metric("推奨ポジションサイズ（USDT換算）", format_usdt(position_plan["position_usdt"]))
+    lot_col1.metric("推奨ポジションサイズ（USD換算）", format_usdt(position_plan["position_usdt"]))
     lot_col2.metric("推奨証拠金使用額（円）", format_currency(position_plan["margin_jpy"]))
 
     st.subheader("売買記録")
@@ -653,8 +653,8 @@ def render_btc_page() -> None:
 
     if st.session_state.get("btc_trade_action") == "fill":
         with st.form("btc_entry_form", clear_on_submit=False):
-            entry_price = st.number_input("約定価格（USDT）", min_value=0.0, value=float(package.limit_price), step=10.0)
-            entry_size_usdt = st.number_input("約定数量（USDT）", min_value=0.0, value=float(position_plan["position_usdt"]), step=100.0)
+            entry_price = st.number_input("約定価格（USD）", min_value=0.0, value=float(package.limit_price), step=10.0)
+            entry_size_usdt = st.number_input("約定数量（USD）", min_value=0.0, value=float(position_plan["position_usdt"]), step=100.0)
             entry_leverage = st.number_input("レバレッジ", min_value=1, max_value=50, value=int(leverage), step=1)
             submitted = st.form_submit_button("記録する")
             if submitted:
@@ -681,7 +681,7 @@ def render_btc_page() -> None:
         latest_open = open_positions.iloc[-1]
         st.markdown("**保有中ポジションの決済記録**")
         st.caption(
-            f"建値 ${float(latest_open['entry_price']):,.2f} / サイズ {float(latest_open['entry_size_usdt']):,.2f} USDT / "
+            f"建値 ${float(latest_open['entry_price']):,.2f} / サイズ {float(latest_open['entry_size_usdt']):,.2f} USD / "
             f"レバ {int(float(latest_open['leverage']))}倍"
         )
         with st.form("btc_exit_form", clear_on_submit=False):
@@ -698,7 +698,7 @@ def render_btc_page() -> None:
     st.subheader("売買履歴")
     history_col1, history_col2, history_col3, history_col4 = st.columns(4)
     history_col1.metric("合計損益（円）", format_currency(summary_stats["total_pnl_jpy"]))
-    history_col2.metric("合計損益（USDT）", format_usdt(summary_stats["total_pnl_usdt"]))
+    history_col2.metric("合計損益（USD）", format_usdt(summary_stats["total_pnl_usdt"]))
     history_col3.metric("勝率", f"{summary_stats['win_rate']:.2%}")
     history_col4.metric("平均損益（円）", format_currency(summary_stats["avg_pnl_jpy"]))
 
