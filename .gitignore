@@ -3,3 +3,9 @@
 __pycache__/
 *.pyc
 .streamlit/secrets.toml
+.pydeps/
+.pyhome/
+*.png
+*.csv
+!trade_history.csv
+get-pip.py

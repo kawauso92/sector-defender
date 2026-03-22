@@ -1,13 +1,41 @@
 from __future__ import annotations
 
-from dotenv import load_dotenv
+import os
 import pandas as pd
 import streamlit as st
 
-load_dotenv()
+try:
+    from dotenv import load_dotenv
 
+    load_dotenv()
+except Exception:
+    pass
+
+from btc_logic import (
+    BtcSignalPackage,
+    apply_monte_carlo_result,
+    append_trade_history_row,
+    build_btc_signal_package,
+    calculate_recommended_position,
+    close_open_trade,
+    format_monte_carlo_sequence,
+    load_trade_history,
+    monte_carlo_fraction,
+    summarize_trade_history,
+)
 from config import APP_TITLE, DEFAULT_CAPITAL, DEFAULT_STOP_LOSS
 from logic import SignalPackage, build_signal_package
+from notify import (
+    build_btc_notification_message,
+    build_vix_notification_message,
+    send_line_notify,
+)
+from vix_logic import (
+    VixSignalPackage,
+    calculate_vix_recommended_position,
+    calculate_vix_units,
+    load_vix_signal_package as build_vix_signal_package,
+)
 
 LONG_LIMIT_MULTIPLIER = 0.999
 SHORT_LIMIT_MULTIPLIER = 1.001
@@ -64,6 +92,18 @@ TEXT_STATUS_DIVIDER = "\u533a\u5207\u308a"
 TEXT_DIRECTION_LONG = "\U0001F7E2\u30ed\u30f3\u30b0"
 TEXT_DIRECTION_SHORT = "\U0001F534\u30b7\u30e7\u30fc\u30c8"
 TEXT_DIRECTION_SKIP = "\u26aa\u898b\u9001\u308a"
+TEXT_PAGE_SELECT = "\u30da\u30fc\u30b8\u9078\u629e"
+TEXT_PAGE_ETF = "\u65e5\u7c73ETF\u30ea\u30fc\u30c9\u30e9\u30b0\u30b7\u30b0\u30ca\u30eb"
+TEXT_PAGE_BTC = "BTC\u6025\u843d\u30ea\u30d0\u30a6\u30f3\u30c9\u30b7\u30b0\u30ca\u30eb"
+TEXT_PAGE_VIX = "VIX\u6025\u843d\u30ea\u30d0\u30a6\u30f3\u30c9\u30b7\u30b0\u30ca\u30eb\uff082558\u5bfe\u8c61\uff09"
+TEXT_BTC_SUBTITLE = "BTC/USDT\u306e1\u6642\u9593\u8db3\u3067-3%\u4ee5\u4e0a\u306e\u6025\u843d\u3092\u691c\u77e5\u3057\u3001E1\u6307\u5024\u306e\u9006\u5f35\u308a\u6761\u4ef6\u3092\u8868\u793a\u3057\u307e\u3059\u3002"
+TEXT_BTC_SIGNAL = "\U0001F534 BTC\u6025\u843d\u30b7\u30b0\u30ca\u30eb\u767a\u751f"
+TEXT_BTC_NO_SIGNAL = "\u2705 \u73fe\u5728\u30b7\u30b0\u30ca\u30eb\u306a\u3057"
+TEXT_VIX_SUBTITLE = "C4\u6761\u4ef6\uff08VIX\u524d\u65e5\u6bd4+10%\u4ee5\u4e0a\u304b\u3064VIX 25\u4ee5\u4e0a\uff09\u3067 2558.T \u306e\u9006\u5f35\u308a\u30b7\u30b0\u30ca\u30eb\u3092\u8868\u793a\u3057\u307e\u3059\u3002"
+TEXT_VIX_SIGNAL = "\U0001F534 VIX\u30b7\u30b0\u30ca\u30eb\u767a\u751f"
+TEXT_VIX_NO_SIGNAL = "\u2705 \u73fe\u5728\u30b7\u30b0\u30ca\u30eb\u306a\u3057"
+TEXT_NOTIFY = "\u901a\u77e5\u8a2d\u5b9a"
+TEXT_NOTIFY_MISSING = ".env\u306bLINE_NOTIFY_TOKEN\u3092\u8a2d\u5b9a\u3057\u3066\u304f\u3060\u3055\u3044"
 
 
 st.set_page_config(page_title=APP_TITLE, layout="wide")
@@ -84,6 +124,16 @@ def load_signal_package(
         candidate_count=candidate_count,
         min_signal_threshold=min_signal_threshold,
     )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_btc_signal_package() -> BtcSignalPackage:
+    return build_btc_signal_package()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_vix_signal_page_package() -> VixSignalPackage:
+    return build_vix_signal_package()
 
 
 def format_currency(value: float) -> str:
@@ -285,116 +335,477 @@ def render_market_summary(package: SignalPackage) -> None:
             st.write(f"{row.sector} ({row.ticker}) : {row.z_score:.2f}")
 
 
-st.title(APP_TITLE)
-st.caption(TEXT_SUBTITLE)
+def format_usdt(value: float) -> str:
+    return f"{value:,.2f} USDT"
 
-refresh_col, meta_col = st.columns([1, 3])
-with refresh_col:
-    if st.button(TEXT_REFRESH):
-        st.cache_data.clear()
-        st.rerun()
-with meta_col:
-    st.write(f"{TEXT_DISPLAY_TIME}: {pd.Timestamp.now(tz='Asia/Tokyo').strftime('%Y-%m-%d %H:%M JST')}")
 
-st.sidebar.header(TEXT_SETTINGS)
-mode_placeholder = st.sidebar.empty()
-manual_override = st.sidebar.checkbox(TEXT_MANUAL_OVERRIDE)
-manual_mode_label = st.sidebar.selectbox(
-    TEXT_MANUAL_MODE,
-    options=[TEXT_NORMAL_MODE, TEXT_SHORT_PRIORITY_MODE],
-    index=0,
-    disabled=not manual_override,
-)
-total_capital = st.sidebar.number_input(TEXT_CAPITAL, min_value=10000, step=10000, value=DEFAULT_CAPITAL)
-stop_loss_rate_pct = st.sidebar.slider(TEXT_STOP_LOSS, min_value=0.5, max_value=10.0, step=0.5, value=DEFAULT_STOP_LOSS * 100)
-candidate_count = st.sidebar.slider(TEXT_CANDIDATE_COUNT, min_value=1, max_value=8, value=5)
-min_signal_threshold = st.sidebar.slider(TEXT_MIN_THRESHOLD, min_value=0.0, max_value=2.0, step=0.1, value=1.0)
-count_placeholder = st.sidebar.empty()
-updated_placeholder = st.sidebar.empty()
+def format_fx_rate(value: float) -> str:
+    return f"¥{value:,.2f}/USD"
 
-manual_mode = None
-if manual_override:
-    manual_mode = "short_priority" if manual_mode_label == TEXT_SHORT_PRIORITY_MODE else "normal"
 
-try:
-    with st.spinner(TEXT_LOADING):
-        package = load_signal_package(
-            total_capital=float(total_capital),
-            stop_loss_rate=stop_loss_rate_pct / 100,
-            manual_mode=manual_mode,
-            candidate_count=int(candidate_count),
-            min_signal_threshold=float(min_signal_threshold),
-        )
-except Exception as exc:
-    st.error(f"{TEXT_LOAD_ERROR}: {exc}")
-    st.stop()
+def resolve_line_notify_token() -> str:
+    token = os.environ.get("LINE_NOTIFY_TOKEN", "").strip()
+    if token:
+        return token
+    try:
+        return str(st.secrets.get("LINE_NOTIFY_TOKEN", "")).strip()
+    except Exception:
+        return ""
 
-mode_placeholder.caption(package.market_mode_label)
-count_placeholder.caption(
-    TEXT_THRESHOLD_COUNT.format(
-        threshold=package.min_signal_threshold,
-        long_count=package.qualified_long_count,
-        short_count=package.qualified_short_count,
-    )
-)
-updated_placeholder.caption(
-    f"{TEXT_LAST_UPDATE}: {package.fetched_at.strftime('%Y-%m-%d %H:%M:%S JST')} / "
-    f"{TEXT_MARKET_DATE} {package.latest_market_timestamp.strftime('%Y-%m-%d')}"
-)
 
-if package.skip_trading:
-    st.markdown(
-        f"""
-        <div style="padding: 16px; border-radius: 10px; background: #fff1f2; border: 1px solid #fca5a5; color: #991b1b; font-size: 28px; font-weight: 700; text-align: center; margin: 12px 0;">
-            {package.skip_title}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    if package.skip_reason:
-        st.warning(package.skip_reason)
-    st.caption(TEXT_SKIP_INFO)
+def render_notification_settings() -> tuple[str, dict[str, bool]]:
+    st.sidebar.markdown("---")
+    st.sidebar.subheader(TEXT_NOTIFY)
+    btc_notify = st.sidebar.checkbox("BTCシグナル通知", value=False)
+    vix_notify = st.sidebar.checkbox("VIXシグナル通知", value=False)
+    etf_notify = st.sidebar.checkbox("ETFリードラグ通知", value=False)
+    token = resolve_line_notify_token()
+    if not token:
+        st.sidebar.info(TEXT_NOTIFY_MISSING)
+    return token, {"btc": btc_notify, "vix": vix_notify, "etf": etf_notify}
 
-budget_col1, budget_col2, budget_col3, budget_col4 = st.columns(4)
-budget_col1.metric(TEXT_TOTAL_CAPITAL, format_currency(float(total_capital)))
-budget_col2.metric(TEXT_LONG_BUDGET, format_currency(package.long_budget))
-budget_col3.metric(TEXT_SHORT_BUDGET, format_currency(package.short_budget))
-budget_col4.metric(TEXT_BUFFER, format_currency(package.buffer_budget))
 
-render_market_summary(package)
-
-st.subheader(TEXT_RISK)
-if package.risk_messages:
-    for message in package.risk_messages:
-        if "VIX" in message or "\u51fa\u6765\u9ad8" in message:
-            st.warning(message)
-        else:
-            st.info(message)
-else:
-    st.success(TEXT_NO_RISK)
-
-st.subheader(TEXT_ORDER_PRIORITY)
-st.caption(TEXT_SCORE_DESC)
-st.caption(TEXT_DAY_ORDER)
-st.caption(TEXT_CLOSE_EXIT)
-
-st.markdown(f"**{TEXT_LONG}**")
-if package.long_candidates.empty:
-    st.info(TEXT_NO_LONG)
-else:
-    long_table = prepare_candidate_table(package.long_candidates, package.all_us_scores_negative)
-    st.dataframe(style_candidate_table(long_table, "long", package.skip_trading), use_container_width=True, hide_index=True)
-
-st.markdown(f"**{TEXT_SHORT}**")
-if package.short_candidates.empty:
-    st.info(TEXT_NO_SHORT)
-else:
-    short_table = prepare_candidate_table(package.short_candidates, package.all_us_scores_negative)
-    st.dataframe(style_candidate_table(short_table, "short", package.skip_trading), use_container_width=True, hide_index=True)
-
-with st.expander(TEXT_SKIP_LIST, expanded=False):
-    if package.skipped_candidates.empty:
-        st.caption(TEXT_NO_SKIP)
+def maybe_send_notification(session_key: str, enabled: bool, token: str, dedupe_key: str, message: str) -> None:
+    if not enabled or not token:
+        return
+    if st.session_state.get(session_key) == dedupe_key:
+        return
+    sent, response_message = send_line_notify(token, message)
+    if sent:
+        st.session_state[session_key] = dedupe_key
+        st.sidebar.success(response_message)
     else:
-        skipped_table = prepare_skipped_table(package.skipped_candidates)
-        st.dataframe(style_skipped_table(skipped_table, package.skip_trading), use_container_width=True, hide_index=True)
+        st.sidebar.warning(response_message)
+
+
+def render_etf_page() -> None:
+    st.title(APP_TITLE)
+    st.caption(TEXT_SUBTITLE)
+
+    refresh_col, meta_col = st.columns([1, 3])
+    with refresh_col:
+        if st.button(TEXT_REFRESH, key="refresh_etf"):
+            st.cache_data.clear()
+            st.rerun()
+    with meta_col:
+        st.write(f"{TEXT_DISPLAY_TIME}: {pd.Timestamp.now(tz='Asia/Tokyo').strftime('%Y-%m-%d %H:%M JST')}")
+
+    st.sidebar.header(TEXT_SETTINGS)
+    mode_placeholder = st.sidebar.empty()
+    manual_override = st.sidebar.checkbox(TEXT_MANUAL_OVERRIDE)
+    manual_mode_label = st.sidebar.selectbox(
+        TEXT_MANUAL_MODE,
+        options=[TEXT_NORMAL_MODE, TEXT_SHORT_PRIORITY_MODE],
+        index=0,
+        disabled=not manual_override,
+    )
+    total_capital = st.sidebar.number_input(TEXT_CAPITAL, min_value=10000, step=10000, value=DEFAULT_CAPITAL)
+    stop_loss_rate_pct = st.sidebar.slider(TEXT_STOP_LOSS, min_value=0.5, max_value=10.0, step=0.5, value=DEFAULT_STOP_LOSS * 100)
+    candidate_count = st.sidebar.slider(TEXT_CANDIDATE_COUNT, min_value=1, max_value=8, value=5)
+    min_signal_threshold = st.sidebar.slider(TEXT_MIN_THRESHOLD, min_value=0.0, max_value=2.0, step=0.1, value=1.0)
+    count_placeholder = st.sidebar.empty()
+    updated_placeholder = st.sidebar.empty()
+    render_notification_settings()
+
+    manual_mode = None
+    if manual_override:
+        manual_mode = "short_priority" if manual_mode_label == TEXT_SHORT_PRIORITY_MODE else "normal"
+
+    try:
+        with st.spinner(TEXT_LOADING):
+            package = load_signal_package(
+                total_capital=float(total_capital),
+                stop_loss_rate=stop_loss_rate_pct / 100,
+                manual_mode=manual_mode,
+                candidate_count=int(candidate_count),
+                min_signal_threshold=float(min_signal_threshold),
+            )
+    except Exception as exc:
+        st.error(f"{TEXT_LOAD_ERROR}: {exc}")
+        st.stop()
+
+    mode_placeholder.caption(package.market_mode_label)
+    count_placeholder.caption(
+        TEXT_THRESHOLD_COUNT.format(
+            threshold=package.min_signal_threshold,
+            long_count=package.qualified_long_count,
+            short_count=package.qualified_short_count,
+        )
+    )
+    updated_placeholder.caption(
+        f"{TEXT_LAST_UPDATE}: {package.fetched_at.strftime('%Y-%m-%d %H:%M:%S JST')} / "
+        f"{TEXT_MARKET_DATE} {package.latest_market_timestamp.strftime('%Y-%m-%d')}"
+    )
+
+    if package.skip_trading:
+        st.markdown(
+            f"""
+            <div style="padding: 16px; border-radius: 10px; background: #fff1f2; border: 1px solid #fca5a5; color: #991b1b; font-size: 28px; font-weight: 700; text-align: center; margin: 12px 0;">
+                {package.skip_title}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if package.skip_reason:
+            st.warning(package.skip_reason)
+        st.caption(TEXT_SKIP_INFO)
+
+    budget_col1, budget_col2, budget_col3, budget_col4 = st.columns(4)
+    budget_col1.metric(TEXT_TOTAL_CAPITAL, format_currency(float(total_capital)))
+    budget_col2.metric(TEXT_LONG_BUDGET, format_currency(package.long_budget))
+    budget_col3.metric(TEXT_SHORT_BUDGET, format_currency(package.short_budget))
+    budget_col4.metric(TEXT_BUFFER, format_currency(package.buffer_budget))
+
+    render_market_summary(package)
+
+    st.subheader(TEXT_RISK)
+    if package.risk_messages:
+        for message in package.risk_messages:
+            if "VIX" in message or "\u51fa\u6765\u9ad8" in message:
+                st.warning(message)
+            else:
+                st.info(message)
+    else:
+        st.success(TEXT_NO_RISK)
+
+    st.subheader(TEXT_ORDER_PRIORITY)
+    st.caption(TEXT_SCORE_DESC)
+    st.caption(TEXT_DAY_ORDER)
+    st.caption(TEXT_CLOSE_EXIT)
+
+    st.markdown(f"**{TEXT_LONG}**")
+    if package.long_candidates.empty:
+        st.info(TEXT_NO_LONG)
+    else:
+        long_table = prepare_candidate_table(package.long_candidates, package.all_us_scores_negative)
+        st.dataframe(style_candidate_table(long_table, "long", package.skip_trading), use_container_width=True, hide_index=True)
+
+    st.markdown(f"**{TEXT_SHORT}**")
+    if package.short_candidates.empty:
+        st.info(TEXT_NO_SHORT)
+    else:
+        short_table = prepare_candidate_table(package.short_candidates, package.all_us_scores_negative)
+        st.dataframe(style_candidate_table(short_table, "short", package.skip_trading), use_container_width=True, hide_index=True)
+
+    with st.expander(TEXT_SKIP_LIST, expanded=False):
+        if package.skipped_candidates.empty:
+            st.caption(TEXT_NO_SKIP)
+        else:
+            skipped_table = prepare_skipped_table(package.skipped_candidates)
+            st.dataframe(style_skipped_table(skipped_table, package.skip_trading), use_container_width=True, hide_index=True)
+
+
+def render_btc_page() -> None:
+    st.title(TEXT_PAGE_BTC)
+    st.caption(TEXT_BTC_SUBTITLE)
+
+    refresh_col, meta_col = st.columns([1, 3])
+    with refresh_col:
+        if st.button(TEXT_REFRESH, key="refresh_btc"):
+            st.cache_data.clear()
+            st.rerun()
+    with meta_col:
+        st.write(f"{TEXT_DISPLAY_TIME}: {pd.Timestamp.now(tz='Asia/Tokyo').strftime('%Y-%m-%d %H:%M JST')}")
+
+    st.sidebar.header("設定")
+    collateral_jpy = st.sidebar.number_input("証拠金入力 (円)", min_value=10000, step=10000, value=100000)
+    leverage = st.sidebar.selectbox("レバレッジ", options=[5, 7, 10], index=2)
+    management_label = st.sidebar.selectbox("資金管理方式", options=["固定20%", "分解モンテカルロ法"], index=1)
+
+    if "btc_monte_carlo_sequence" not in st.session_state:
+        st.session_state["btc_monte_carlo_sequence"] = [1, 2, 3]
+    if "btc_trade_action" not in st.session_state:
+        st.session_state["btc_trade_action"] = ""
+
+    button_col1, button_col2 = st.sidebar.columns(2)
+    if button_col1.button("勝ち", key="btc_monte_win"):
+        st.session_state["btc_monte_carlo_sequence"] = apply_monte_carlo_result(st.session_state["btc_monte_carlo_sequence"], True)
+    if button_col2.button("負け", key="btc_monte_loss"):
+        st.session_state["btc_monte_carlo_sequence"] = apply_monte_carlo_result(st.session_state["btc_monte_carlo_sequence"], False)
+    st.sidebar.caption("モンテカルロリスト")
+    st.sidebar.code(format_monte_carlo_sequence(st.session_state["btc_monte_carlo_sequence"]))
+    token, notify_flags = render_notification_settings()
+
+    try:
+        with st.spinner("BTC 1時間足とシグナルを確認しています..."):
+            package = load_btc_signal_package()
+    except Exception as exc:
+        st.error(f"BTCデータ取得に失敗しました: {exc}")
+        st.stop()
+
+    history = load_trade_history()
+    open_positions = history[history["status"] == "open"].copy()
+    current_signal_recorded = False
+    if not history.empty:
+        current_signal_recorded = history["signal_date"].eq(package.latest_timestamp).fillna(False).any()
+
+    management_code = "fixed" if management_label == "固定20%" else "monte_carlo"
+    position_plan = calculate_recommended_position(
+        collateral_jpy=float(collateral_jpy),
+        leverage=int(leverage),
+        management=management_code,
+        monte_carlo_sequence=st.session_state["btc_monte_carlo_sequence"],
+        usd_jpy_rate=package.usd_jpy_rate,
+    )
+
+    fx_label = format_fx_rate(package.usd_jpy_rate)
+    fx_time = package.usd_jpy_timestamp.tz_convert("Asia/Tokyo").strftime("%Y-%m-%d %H:%M JST")
+    fallback_note = "（フォールバック値）" if package.usd_jpy_fallback_used else ""
+    st.caption(
+        f"最終BTCデータ: {package.latest_timestamp.tz_convert('Asia/Tokyo').strftime('%Y-%m-%d %H:%M JST')}"
+        f" / キャッシュ更新: {'Yes' if package.cache_updated else 'No'}"
+    )
+    st.caption(f"為替レート：{fx_label}（{fx_time}）{fallback_note}")
+
+    header_col1, header_col2 = st.columns(2)
+    header_col1.metric("現在のBTC価格", f"${package.current_price:,.2f}")
+    header_col2.metric("直近1時間の変化率", f"{package.latest_change_pct:+.2f}%")
+
+    st.sidebar.caption(f"現在の投入比率: {position_plan['fraction'] * 100:.1f}%")
+    if management_code == "monte_carlo":
+        st.sidebar.caption(f"モンテカルロ比率: {monte_carlo_fraction(st.session_state['btc_monte_carlo_sequence']) * 100:.1f}%")
+
+    if package.signal_active:
+        maybe_send_notification(
+            session_key="btc_last_notified_signal",
+            enabled=notify_flags["btc"],
+            token=token,
+            dedupe_key=f"{package.latest_timestamp.isoformat()}_{package.signal_drop_pct:.2f}",
+            message=build_btc_notification_message(
+                drop_pct=package.signal_drop_pct,
+                limit_price=package.limit_price,
+                margin_jpy=position_plan["margin_jpy"],
+                leverage=int(leverage),
+            ),
+        )
+        st.markdown(
+            "\n".join(
+                [
+                    "━━━━━━━━━━━━━━━━",
+                    "🔴 BTCシグナル発生",
+                    "━━━━━━━━━━━━━━━━",
+                    f"現在価格：${package.current_price:,.2f}（¥{package.current_price * package.usd_jpy_rate:,.0f}）",
+                    "",
+                    "【注文指示】",
+                    "指値注文（Limit Buy）",
+                    f"注文価格：${package.limit_price:,.2f}（現在価格×0.997）",
+                    "有効期限：2時間以内にキャンセル",
+                    "",
+                    "【決済ライン】",
+                    f"利確（Take Profit）：${package.take_profit_price:,.2f}（+1.4%）",
+                    f"損切（Stop Loss）：${package.stop_loss_price:,.2f}（-1.4%）",
+                    "保有上限：1時間",
+                    "",
+                    "【推奨ロット】",
+                    f"証拠金使用額：¥{position_plan['margin_jpy']:,.0f}",
+                    f"ポジションサイズ：{position_plan['position_usdt']:,.2f} USDT",
+                    f"（為替レート：{fx_label}）",
+                    "━━━━━━━━━━━━━━━━",
+                ]
+            )
+        )
+    else:
+        st.success(TEXT_BTC_NO_SIGNAL)
+        st.markdown("**直近の急落履歴（過去5件）**")
+        recent_drops = package.recent_drops.copy()
+        recent_drops["急落時刻"] = pd.to_datetime(recent_drops["急落時刻"], utc=True).dt.tz_convert("Asia/Tokyo").dt.strftime("%Y-%m-%d %H:%M")
+        recent_drops["終値(USDT)"] = recent_drops["終値(USDT)"].map(lambda value: f"{value:,.2f}")
+        recent_drops["1時間変化率"] = recent_drops["1時間変化率"].map(lambda value: f"{value:.2f}%")
+        st.dataframe(recent_drops, use_container_width=True, hide_index=True)
+
+    st.subheader("推奨ロット")
+    lot_col1, lot_col2 = st.columns(2)
+    lot_col1.metric("推奨ポジションサイズ（USDT換算）", format_usdt(position_plan["position_usdt"]))
+    lot_col2.metric("推奨証拠金使用額（円）", format_currency(position_plan["margin_jpy"]))
+
+    st.subheader("売買記録")
+    action_col1, action_col2, action_col3 = st.columns(3)
+    if action_col1.button("✅ 約定した", disabled=(not package.signal_active) or current_signal_recorded, key="btc_fill_button"):
+        st.session_state["btc_trade_action"] = "fill"
+    if action_col2.button("❌ 見送り", disabled=(not package.signal_active) or current_signal_recorded, key="btc_skip_button"):
+        append_trade_history_row(
+            {
+                "signal_date": package.latest_timestamp,
+                "signal_price": package.current_price,
+                "entry_type": "E1_limit_pullback",
+                "take_profit": package.take_profit_price,
+                "stop_loss": package.stop_loss_price,
+                "status": "skipped",
+            }
+        )
+        st.session_state["btc_trade_action"] = ""
+        st.success("見送りを記録しました。")
+        st.rerun()
+    if action_col3.button("⏰ 期限切れ", disabled=(not package.signal_active) or current_signal_recorded, key="btc_expired_button"):
+        append_trade_history_row(
+            {
+                "signal_date": package.latest_timestamp,
+                "signal_price": package.current_price,
+                "entry_type": "E1_limit_pullback",
+                "take_profit": package.take_profit_price,
+                "stop_loss": package.stop_loss_price,
+                "status": "expired",
+            }
+        )
+        st.session_state["btc_trade_action"] = ""
+        st.success("期限切れを記録しました。")
+        st.rerun()
+
+    if st.session_state.get("btc_trade_action") == "fill":
+        with st.form("btc_entry_form", clear_on_submit=False):
+            entry_price = st.number_input("約定価格（USDT）", min_value=0.0, value=float(package.limit_price), step=10.0)
+            entry_size_usdt = st.number_input("約定数量（USDT）", min_value=0.0, value=float(position_plan["position_usdt"]), step=100.0)
+            entry_leverage = st.number_input("レバレッジ", min_value=1, max_value=50, value=int(leverage), step=1)
+            submitted = st.form_submit_button("記録する")
+            if submitted:
+                entry_jpy = (float(entry_size_usdt) / max(float(entry_leverage), 1.0)) * package.usd_jpy_rate
+                append_trade_history_row(
+                    {
+                        "signal_date": package.latest_timestamp,
+                        "signal_price": package.current_price,
+                        "entry_type": "E1_limit_pullback",
+                        "entry_price": float(entry_price),
+                        "entry_size_usdt": float(entry_size_usdt),
+                        "leverage": float(entry_leverage),
+                        "entry_jpy": entry_jpy,
+                        "take_profit": package.take_profit_price,
+                        "stop_loss": package.stop_loss_price,
+                        "status": "open",
+                    }
+                )
+                st.session_state["btc_trade_action"] = ""
+                st.success("約定を記録しました。")
+                st.rerun()
+
+    if not open_positions.empty:
+        latest_open = open_positions.iloc[-1]
+        st.markdown("**保有中ポジションの決済記録**")
+        st.caption(
+            f"建値 ${float(latest_open['entry_price']):,.2f} / サイズ {float(latest_open['entry_size_usdt']):,.2f} USDT / "
+            f"レバ {int(float(latest_open['leverage']))}倍"
+        )
+        with st.form("btc_exit_form", clear_on_submit=False):
+            exit_price = st.number_input("決済価格入力", min_value=0.0, value=float(package.current_price), step=10.0)
+            exit_reason = st.selectbox("決済理由", options=["利確", "損切り", "強制決済", "手動"], index=0)
+            exit_submitted = st.form_submit_button("決済記録")
+            if exit_submitted:
+                close_open_trade(float(exit_price), str(exit_reason), package.usd_jpy_rate)
+                st.success("決済を記録しました。")
+                st.rerun()
+
+    history = load_trade_history()
+    summary_stats = summarize_trade_history(history)
+    st.subheader("売買履歴")
+    history_col1, history_col2, history_col3, history_col4 = st.columns(4)
+    history_col1.metric("合計損益（円）", format_currency(summary_stats["total_pnl_jpy"]))
+    history_col2.metric("合計損益（USDT）", format_usdt(summary_stats["total_pnl_usdt"]))
+    history_col3.metric("勝率", f"{summary_stats['win_rate']:.2%}")
+    history_col4.metric("平均損益（円）", format_currency(summary_stats["avg_pnl_jpy"]))
+
+    history_display = history.sort_values("signal_date", ascending=False).head(10).copy()
+    if not history_display.empty:
+        history_display["signal_date"] = pd.to_datetime(history_display["signal_date"], utc=True, errors="coerce").dt.tz_convert("Asia/Tokyo").dt.strftime("%Y-%m-%d %H:%M")
+        for column in ["signal_price", "entry_price", "entry_size_usdt", "entry_jpy", "take_profit", "stop_loss", "exit_price", "pnl_usdt", "pnl_jpy"]:
+            history_display[column] = history_display[column].map(lambda value: f"{value:,.2f}" if pd.notna(value) else "-")
+        history_display["pnl_pct"] = history_display["pnl_pct"].map(lambda value: f"{value:.2%}" if pd.notna(value) else "-")
+        st.dataframe(history_display, use_container_width=True, hide_index=True)
+        st.download_button(
+            "CSVエクスポート",
+            data=history.to_csv(index=False, encoding="utf-8-sig"),
+            file_name="trade_history.csv",
+            mime="text/csv",
+        )
+    else:
+        st.info("売買履歴はまだありません。")
+
+    st.subheader("バックテスト結果サマリー")
+    summary = package.backtest_summary
+    st.markdown("戦略概要：-3%急落後リバウンド狙い")
+    st.markdown(
+        f"実績（2020-2025）：年率{summary.annual_return_net * 100:.1f}%"
+        f"・勝率{summary.win_rate * 100:.1f}%・最大連敗{summary.max_losing_streak}回"
+    )
+
+
+def render_vix_page() -> None:
+    st.title(TEXT_PAGE_VIX)
+    st.caption(TEXT_VIX_SUBTITLE)
+
+    refresh_col, meta_col = st.columns([1, 3])
+    with refresh_col:
+        if st.button(TEXT_REFRESH, key="refresh_vix"):
+            st.cache_data.clear()
+            st.rerun()
+    with meta_col:
+        st.write(f"{TEXT_DISPLAY_TIME}: {pd.Timestamp.now(tz='Asia/Tokyo').strftime('%Y-%m-%d %H:%M JST')}")
+
+    st.sidebar.header(TEXT_SETTINGS)
+    collateral_jpy = st.sidebar.number_input("証拠金入力 (円)", min_value=10000, step=10000, value=100000, key="vix_collateral")
+    st.sidebar.selectbox("資金管理方式", options=["ケリー基準"], index=0, key="vix_mgmt")
+    is_holding = st.sidebar.checkbox("現在保有中", value=False, key="vix_holding")
+    token, notify_flags = render_notification_settings()
+
+    try:
+        with st.spinner("VIX と 2558.T の最新データを取得しています..."):
+            package = load_vix_signal_page_package()
+    except Exception as exc:
+        st.error(f"VIXデータ取得に失敗しました: {exc}")
+        st.stop()
+
+    recommendation = calculate_vix_recommended_position(float(collateral_jpy), bool(is_holding))
+    recommended_units = calculate_vix_units(recommendation["amount_jpy"], package.limit_price)
+
+    st.caption(
+        f"最終VIXデータ: {package.vix_date.tz_convert('Asia/Tokyo').strftime('%Y-%m-%d %H:%M JST')}"
+    )
+    metric_col1, metric_col2 = st.columns(2)
+    metric_col1.metric("現在のVIX値", f"{package.current_vix:.2f}")
+    metric_col2.metric("前日比変化率", f"{package.vix_change_pct:+.2f}%")
+
+    if package.signal_active:
+        maybe_send_notification(
+            session_key="vix_last_notified_signal",
+            enabled=notify_flags["vix"],
+            token=token,
+            dedupe_key=f"{package.vix_date.isoformat()}_{package.current_vix:.2f}_{package.vix_change_pct:.2f}",
+            message=build_vix_notification_message(
+                vix_value=package.current_vix,
+                vix_change_pct=package.vix_change_pct,
+                limit_price_jpy=package.limit_price,
+                amount_jpy=recommendation["amount_jpy"],
+            ),
+        )
+        st.error(TEXT_VIX_SIGNAL)
+        st.markdown(f"**VIX現在値**: {package.current_vix:.2f}")
+        st.markdown(f"**前日比**: {package.vix_change_pct:+.2f}%")
+        st.markdown(f"**2558.T指値価格**: {format_price(package.limit_price)}")
+        st.markdown("**利確**: VIXが20以下に戻った翌日決済")
+        st.markdown("**損切り**: なし")
+    else:
+        st.success(TEXT_VIX_NO_SIGNAL)
+        st.markdown("**直近5営業日のVIX値**")
+        st.dataframe(package.recent_vix, use_container_width=True, hide_index=True)
+
+    st.subheader("推奨ロット")
+    lot_col1, lot_col2 = st.columns(2)
+    lot_col1.metric("推奨金額", format_currency(recommendation["amount_jpy"]))
+    lot_col2.metric("推奨口数", f"{recommended_units:,d} 口")
+    st.caption(f"ケリー基準投入比率: {package.backtest_summary.kelly_fraction * 100:.1f}%")
+
+    st.subheader("バックテスト結果サマリー")
+    st.markdown("戦略：C4+L5×S0+ケリー基準")
+    st.markdown(
+        f"実績：年率{package.backtest_summary.annual_return * 100:.2f}%"
+        f"・勝率{package.backtest_summary.win_rate * 100:.1f}%"
+        f"・最大DD{package.backtest_summary.max_drawdown * 100:.2f}%"
+    )
+
+
+page = st.sidebar.radio(TEXT_PAGE_SELECT, options=[TEXT_PAGE_ETF, TEXT_PAGE_BTC, TEXT_PAGE_VIX], index=0)
+
+if page == TEXT_PAGE_ETF:
+    render_etf_page()
+elif page == TEXT_PAGE_BTC:
+    render_btc_page()
+else:
+    render_vix_page()

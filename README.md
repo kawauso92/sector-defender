@@ -1,21 +1,15 @@
 # Sector Defender
-日米業種ETFリードラグ投資シグナルWebアプリ
 
-## 運用方針
-- ロジック：米国業種ETF z-score → 日本業種ETFリードラグ
-- 閾値：1.0以上のシグナルのみエントリー（Pattern B）
-- 注文方法：指値（前日終値×0.999/1.001）・当日限り
-- 決済：引け成行（15時15分〜25分）
-- 資金配分：ロング60%・ショート30%・バッファ10%
-  （ショート優先モード時はロング30%・ショート60%）
+日米ETFリードラグ、BTC急落リバウンド、VIX急騰リバウンドのシグナルを確認する Streamlit アプリです。
 
-## バックテスト結果（2015-2025）
-- 年率リターン（コストなし）：39.28%
-- 年率リターン（コスト0.1%込み）：13.36%
-- 最大ドローダウン：-20.41%
-- 勝率：49.32%
+## ページ構成
 
-## セットアップ
+- 日米ETFリードラグシグナル
+- BTC急落リバウンドシグナル
+- VIX急落リバウンドシグナル（2558対象）
+
+## ローカル起動
+
 ```bash
 git clone https://github.com/kawauso92/sector-defender
 cd sector-defender
@@ -24,13 +18,55 @@ cp .env.example .env
 streamlit run app.py
 ```
 
-## 別環境での再開
-```bash
-git pull
-streamlit run app.py
+## 環境変数
+
+`.env.example` を `.env` にコピーして使います。
+
+```env
+DEFAULT_CAPITAL=200000
+DEFAULT_STOP_LOSS=0.02
+ROLLING_WINDOW=60
+DATA_PERIOD=9mo
+VIX_ALERT_LEVEL=25
+VIX_SKIP_LEVEL=30
+VIX_SIGNAL_DAMPING=0.50
+LONG_SHORT_CAPITAL_RATIO=0.30
+TAKE_PROFIT_RATIO=0.03
+MAX_POSITION_BUDGET_RATIO=0.40
+WEAK_SIGNAL_THRESHOLD=0.50
+LINE_NOTIFY_TOKEN=your_token_here
 ```
 
-## 注意事項
-- データはyfinance（15〜20分遅延）
-- 本番運用は自己責任で
-- バックテスト結果は将来の利益を保証しない
+## Streamlit Cloudデプロイ手順
+
+1. [https://share.streamlit.io](https://share.streamlit.io) にアクセス
+2. GitHubアカウントでログイン
+3. `New app` をクリック
+4. `Repository`: `kawauso92/sector-defender`
+5. `Branch`: `main`
+6. `Main file path`: `app.py`
+7. `Advanced settings` → `Secrets` に以下を追加
+
+```toml
+LINE_NOTIFY_TOKEN = "your_token"
+```
+
+8. `Deploy` をクリック
+
+補足:
+
+- `btc_1h_cache.csv` と `trade_history.csv` がなくても、アプリ側で初期化または再取得するようにしてあります。
+- `LINE_NOTIFY_TOKEN` はローカルでは `.env`、Streamlit Cloud では Secrets から読み込みます。
+
+## LINE Notify 設定
+
+1. `.env` または Streamlit Cloud Secrets に `LINE_NOTIFY_TOKEN` を設定
+2. サイドバーの通知設定で BTC/VIX 通知を ON
+3. シグナル発生時に通知送信
+
+## 補助ファイル
+
+- `app.py`: Streamlit UI
+- `btc_logic.py`: BTC シグナル判定、為替取得、履歴管理
+- `vix_logic.py`: VIX シグナル判定
+- `notify.py`: 通知送信
