@@ -6,15 +6,13 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-import requests
 import yfinance as yf
 
-START = pd.Timestamp("2020-01-01 00:00:00", tz="UTC")
+BTC_TICKER = "BTC-USDT"
+USDJPY_TICKER = "USDJPY=X"
 BTC_H1_CACHE = Path("btc_1h_cache.csv")
 BTC_DROP_RESULTS = Path("btc_drop_results.csv")
 TRADE_HISTORY_CSV = Path("trade_history.csv")
-BINANCE_KLINES_URL = "https://fapi.binance.com/fapi/v1/klines"
-USER_AGENT = {"User-Agent": "Mozilla/5.0"}
 
 SIGNAL_DROP_THRESHOLD = -0.03
 ENTRY_MULTIPLIER = 0.997
@@ -22,7 +20,6 @@ TAKE_PROFIT_MULTIPLIER = 1.014
 STOP_LOSS_MULTIPLIER = 0.986
 ENTRY_EXPIRY_HOURS = 2
 DEFAULT_USDJPY = 150.0
-USDJPY_TICKER = "USDJPY=X"
 
 TRADE_HISTORY_COLUMNS = [
     "signal_date",
@@ -70,79 +67,43 @@ class BtcSignalPackage:
     usd_jpy_fallback_used: bool
 
 
-def _binance_get(params: dict[str, Any]) -> list[Any]:
-    response = requests.get(BINANCE_KLINES_URL, params=params, timeout=30, headers=USER_AGENT)
-    response.raise_for_status()
-    payload = response.json()
-    if not isinstance(payload, list):
-        raise ValueError(f"Unexpected Binance payload: {payload}")
-    return payload
-
-
-def _parse_klines(rows: list[list[Any]]) -> pd.DataFrame:
-    frame = pd.DataFrame(
-        rows,
-        columns=[
-            "open_time",
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume",
-            "close_time",
-            "quote_asset_volume",
-            "number_of_trades",
-            "taker_buy_base_asset_volume",
-            "taker_buy_quote_asset_volume",
-            "ignore",
-        ],
+def _normalize_history(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        raise ValueError("BTC history is empty.")
+    history = frame.copy()
+    if isinstance(history.columns, pd.MultiIndex):
+        history.columns = history.columns.get_level_values(0)
+    history.index = pd.to_datetime(history.index, utc=True, errors="coerce")
+    history = history.dropna(axis=0, how="all")
+    history = history.rename(
+        columns={
+            "Open": "open",
+            "High": "high",
+            "Low": "low",
+            "Close": "close",
+            "Volume": "volume",
+        }
     )
-    frame["open_time"] = pd.to_datetime(frame["open_time"], unit="ms", utc=True)
-    frame["close_time"] = pd.to_datetime(frame["close_time"], unit="ms", utc=True)
-    for column in [
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-        "quote_asset_volume",
-        "number_of_trades",
-        "taker_buy_base_asset_volume",
-        "taker_buy_quote_asset_volume",
-        "ignore",
-    ]:
-        frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    frame = frame.dropna(subset=["open_time", "close_time", "open", "high", "low", "close"])
-    return frame.sort_values("open_time").drop_duplicates(subset=["open_time"]).reset_index(drop=True)
+    for column in ["open", "high", "low", "close", "volume"]:
+        if column in history.columns:
+            history[column] = pd.to_numeric(history[column], errors="coerce")
+    history = history.dropna(subset=["open", "high", "low", "close"])
+    history = history.sort_index()
+    history = history.reset_index().rename(columns={"Datetime": "open_time", "Date": "open_time"})
+    history["close_time"] = history["open_time"] + pd.Timedelta(hours=1) - pd.Timedelta(milliseconds=1)
+    return history[["open_time", "open", "high", "low", "close", "volume", "close_time"]].reset_index(drop=True)
 
 
-def _fetch_hourly_klines(start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
-    rows: list[list[Any]] = []
-    start_ms = int(start.timestamp() * 1000)
-    end_ms = int(end.timestamp() * 1000)
-
-    while start_ms <= end_ms:
-        payload = _binance_get(
-            {
-                "symbol": "BTCUSDT",
-                "interval": "1h",
-                "startTime": start_ms,
-                "endTime": end_ms,
-                "limit": 1500,
-            }
-        )
-        if not payload:
-            break
-
-        rows.extend(payload)
-        last_open_time = int(payload[-1][0])
-        if last_open_time >= end_ms:
-            break
-        start_ms = last_open_time + 1
-
-    if not rows:
-        raise ValueError("No BTCUSDT 1h data downloaded from Binance.")
-    return _parse_klines(rows)
+def _download_btc_hourly_history() -> pd.DataFrame:
+    history = yf.download(
+        BTC_TICKER,
+        period="60d",
+        interval="1h",
+        progress=False,
+        auto_adjust=False,
+        threads=False,
+    )
+    return _normalize_history(history)
 
 
 def _read_cache(path: Path) -> pd.DataFrame | None:
@@ -151,52 +112,28 @@ def _read_cache(path: Path) -> pd.DataFrame | None:
     frame = pd.read_csv(path)
     if frame.empty:
         return None
-    frame["open_time"] = pd.to_datetime(frame["open_time"], utc=True)
-    frame["close_time"] = pd.to_datetime(frame["close_time"], utc=True)
-    for column in [
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-        "quote_asset_volume",
-        "number_of_trades",
-        "taker_buy_base_asset_volume",
-        "taker_buy_quote_asset_volume",
-        "ignore",
-    ]:
+    frame["open_time"] = pd.to_datetime(frame["open_time"], utc=True, errors="coerce")
+    frame["close_time"] = pd.to_datetime(frame["close_time"], utc=True, errors="coerce")
+    for column in ["open", "high", "low", "close", "volume"]:
         if column in frame.columns:
             frame[column] = pd.to_numeric(frame[column], errors="coerce")
     frame = frame.dropna(subset=["open_time", "close_time", "open", "high", "low", "close"])
-    return frame.sort_values("open_time").drop_duplicates(subset=["open_time"]).reset_index(drop=True)
+    frame = frame.sort_values("open_time").drop_duplicates(subset=["open_time"]).reset_index(drop=True)
+    return frame
 
 
 def load_or_refresh_btc_hourly_cache(cache_path: Path = BTC_H1_CACHE) -> tuple[pd.DataFrame, bool]:
     cached = _read_cache(cache_path)
     now_complete = pd.Timestamp.now(tz="UTC").floor("1h") - pd.Timedelta(hours=1)
 
-    if cached is None:
-        fresh = _fetch_hourly_klines(START, now_complete)
-        fresh.to_csv(cache_path, index=False, encoding="utf-8-sig")
-        return fresh, True
+    if cached is not None and not cached.empty:
+        last_cached = pd.Timestamp(cached["open_time"].max())
+        if last_cached >= now_complete - pd.Timedelta(hours=1):
+            return cached, False
 
-    last_cached = pd.Timestamp(cached["open_time"].max())
-    if last_cached >= now_complete:
-        return cached, False
-
-    fetch_start = max(START, last_cached - pd.Timedelta(days=7))
-    try:
-        recent = _fetch_hourly_klines(fetch_start, now_complete)
-        merged = (
-            pd.concat([cached, recent], ignore_index=True)
-            .sort_values("open_time")
-            .drop_duplicates(subset=["open_time"], keep="last")
-            .reset_index(drop=True)
-        )
-        merged.to_csv(cache_path, index=False, encoding="utf-8-sig")
-        return merged, True
-    except Exception:
-        return cached, False
+    fresh = _download_btc_hourly_history()
+    fresh.to_csv(cache_path, index=False, encoding="utf-8-sig")
+    return fresh, True
 
 
 def _select_backtest_row(frame: pd.DataFrame) -> pd.Series:
@@ -228,6 +165,24 @@ def load_backtest_summary(path: Path = BTC_DROP_RESULTS) -> BtcBacktestSummary:
     )
 
 
+def _extract_fast_last_price(ticker: yf.Ticker) -> float | None:
+    try:
+        fast_info = ticker.fast_info
+        if hasattr(fast_info, "get"):
+            for key in ["lastPrice", "last_price", "regularMarketPrice"]:
+                value = fast_info.get(key)
+                if value is not None:
+                    return float(value)
+        for key in ["lastPrice", "last_price", "regularMarketPrice"]:
+            if hasattr(fast_info, key):
+                value = getattr(fast_info, key)
+                if value is not None:
+                    return float(value)
+    except Exception:
+        return None
+    return None
+
+
 def load_usd_jpy_rate() -> tuple[float, pd.Timestamp, bool]:
     fallback_timestamp = pd.Timestamp.now(tz="UTC")
     try:
@@ -250,6 +205,17 @@ def build_btc_signal_package() -> BtcSignalPackage:
     frame = frame.dropna(subset=["prev_close", "hourly_return"]).reset_index(drop=True)
     latest = frame.iloc[-1]
 
+    ticker = yf.Ticker(BTC_TICKER)
+    current_price = _extract_fast_last_price(ticker)
+    if current_price is None or current_price <= 0:
+        current_price = float(latest["close"])
+
+    latest_timestamp = pd.Timestamp(latest["close_time"])
+    latest_change_pct = float(latest["hourly_return"] * 100.0)
+    limit_price = current_price * ENTRY_MULTIPLIER
+    take_profit_price = limit_price * TAKE_PROFIT_MULTIPLIER
+    stop_loss_price = limit_price * STOP_LOSS_MULTIPLIER
+
     drops = frame[frame["hourly_return"] <= SIGNAL_DROP_THRESHOLD].copy()
     recent_drops = drops[["close_time", "close", "hourly_return"]].tail(5).copy()
     recent_drops["hourly_return_pct"] = recent_drops["hourly_return"] * 100.0
@@ -261,16 +227,10 @@ def build_btc_signal_package() -> BtcSignalPackage:
         }
     )
 
-    current_price = float(latest["close"])
-    latest_timestamp = pd.Timestamp(latest["close_time"])
-    latest_change_pct = float(latest["hourly_return"] * 100.0)
-    limit_price = current_price * ENTRY_MULTIPLIER
-    take_profit_price = limit_price * TAKE_PROFIT_MULTIPLIER
-    stop_loss_price = limit_price * STOP_LOSS_MULTIPLIER
     usd_jpy_rate, usd_jpy_timestamp, usd_jpy_fallback_used = load_usd_jpy_rate()
 
     return BtcSignalPackage(
-        current_price=current_price,
+        current_price=float(current_price),
         latest_change_pct=latest_change_pct,
         latest_timestamp=latest_timestamp,
         signal_active=latest_change_pct <= SIGNAL_DROP_THRESHOLD * 100.0,
